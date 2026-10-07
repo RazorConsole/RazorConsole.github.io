@@ -1,0 +1,168 @@
+name: Build and deploy organization site
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPOSITORY: RazorConsole/RazorConsole
+  SOURCE_REF: main
+  VITE_SITE_URL: https://razorconsole.github.io
+  VITE_BASE: /
+  VITE_ROUTER_BASENAME: /
+
+jobs:
+  build:
+    name: Build source website
+    runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Check out website source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ env.SOURCE_REF }}
+          path: source
+          fetch-depth: 1
+          lfs: true
+
+      - name: Record source revision
+        id: source
+        working-directory: source
+        shell: bash
+        run: |
+          source_sha="$(git rev-parse HEAD)"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Website source"
+            echo
+            echo "- Repository: \`$SOURCE_REPOSITORY\`"
+            echo "- Requested ref: \`$SOURCE_REF\`"
+            echo "- Built commit: \`$source_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup .NET for documentation and WASM
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: source/global.json
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: source/website/package-lock.json
+
+      - name: Build API documentation input
+        working-directory: source
+        run: dotnet build src/RazorConsole.Core/RazorConsole.Core.csproj --configuration Release --framework net10.0
+
+      - name: Install website dependencies
+        working-directory: source/website
+        run: npm ci
+
+      - name: Setup Python for browser regressions
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install headless browser test tools
+        working-directory: source/website
+        run: |
+          python -m pip install -r tests/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Build and test root website
+        working-directory: source/website
+        run: npm run test:terminal-input && npm run test:seo && npm run build && npm run test:seo:static
+
+      - name: Verify built tutorial navigation
+        working-directory: source/website
+        run: python tests/tutorial_navigation.py
+
+      - name: Prepare and verify Pages artifact
+        working-directory: source
+        shell: bash
+        run: |
+          cp website/build/client/index.html website/build/client/404.html
+          touch website/build/client/.nojekyll
+          test -f website/build/client/googleddbc334a439061f3.html
+          python - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          output = Path("website/build/client")
+          sitemap = output / "sitemap.xml"
+          if not sitemap.is_file():
+              raise SystemExit("Missing sitemap.xml")
+
+          namespace = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+          urls = [
+              node.text
+              for node in ElementTree.parse(sitemap).findall(".//s:loc", namespace)
+          ]
+          if not urls:
+              raise SystemExit("Sitemap contains no URLs")
+          if len(urls) != len(set(urls)):
+              raise SystemExit("Sitemap contains duplicate URLs")
+          invalid = [
+              url
+              for url in urls
+              if not url.startswith("https://razorconsole.github.io/")
+              or url.startswith("https://razorconsole.github.io/RazorConsole/")
+          ]
+          if invalid:
+              raise SystemExit(f"Invalid root-site sitemap URLs: {invalid[:5]}")
+
+          home = (output / "index.html").read_text(encoding="utf-8")
+          if 'rel="canonical" href="https://razorconsole.github.io/"' not in home:
+              raise SystemExit("Homepage canonical is not the organization root URL")
+          if "/RazorConsole/" in home:
+              raise SystemExit("Homepage still contains the legacy project-site base")
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: source/website/build/client
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v5
