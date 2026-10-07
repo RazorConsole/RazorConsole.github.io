@@ -106,7 +106,22 @@ jobs:
           test -f website/build/client/googleddbc334a439061f3.html
           python - <<'PY'
           from pathlib import Path
+          from html.parser import HTMLParser
           from xml.etree import ElementTree
+
+          class RootReferenceParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.invalid = []
+
+              def handle_starttag(self, tag, attrs):
+                  for name, value in attrs:
+                      if name not in {"href", "src"} or not value:
+                          continue
+                      if value.startswith("/RazorConsole/") or value.startswith(
+                          "https://razorconsole.github.io/RazorConsole/"
+                      ):
+                          self.invalid.append((tag, name, value))
 
           output = Path("website/build/client")
           sitemap = output / "sitemap.xml"
@@ -134,8 +149,12 @@ jobs:
           home = (output / "index.html").read_text(encoding="utf-8")
           if 'rel="canonical" href="https://razorconsole.github.io/"' not in home:
               raise SystemExit("Homepage canonical is not the organization root URL")
-          if "/RazorConsole/" in home:
-              raise SystemExit("Homepage still contains the legacy project-site base")
+          references = RootReferenceParser()
+          references.feed(home)
+          if references.invalid:
+              raise SystemExit(
+                  f"Homepage references the legacy project-site base: {references.invalid[:5]}"
+              )
           PY
 
       - name: Upload Pages artifact
