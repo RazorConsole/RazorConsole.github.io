@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character RazorConsole/RazorConsole commit SHA (defaults to main)
+        required: false
+        type: string
   schedule:
     - cron: '17 5 * * *'
 
@@ -18,7 +23,7 @@ concurrency:
 
 env:
   SOURCE_REPOSITORY: RazorConsole/RazorConsole
-  SOURCE_REF: main
+  SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || 'main' }}
   VITE_SITE_URL: https://razorconsole.github.io
   VITE_BASE: /
   VITE_ROUTER_BASENAME: /
@@ -30,6 +35,17 @@ jobs:
     outputs:
       source-sha: ${{ steps.source.outputs.sha }}
     steps:
+      - name: Validate requested source revision
+        if: github.event_name == 'workflow_dispatch' && inputs.source_sha != ''
+        shell: bash
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error title=Invalid source_sha::source_sha must be exactly 40 hexadecimal characters"
+            exit 1
+          fi
+
       - name: Check out website source
         uses: actions/checkout@v7
         with:

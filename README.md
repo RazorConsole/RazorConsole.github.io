@@ -24,8 +24,25 @@ Before the first deployment, an organization owner must open **Settings → Page
 deployment** and set **Source** to **GitHub Actions**. The existing project site should not be changed
 until the root URL and representative routes return HTTP 200.
 
-To recover or immediately pick up a source change, run **Build and deploy organization site** from
-the Actions tab on the `main` branch. GitHub's repository-scoped `GITHUB_TOKEN` cannot trigger a
-workflow in another repository, so immediate source-driven deployments would require an explicitly
-managed GitHub App or fine-grained token. The scheduled and manual paths require no cross-repository
-secret.
+To recover or immediately deploy a known source revision, run **Build and deploy organization
+site** from the Actions tab on this repository's `main` branch. Set `source_sha` to the full
+40-character hexadecimal commit SHA from `RazorConsole/RazorConsole`; leaving it empty builds that
+repository's current `main`. The workflow validates a provided value before checkout, and its
+summary records both the requested ref and the commit that was actually built.
+
+Source-repository automation can request the same exact revision through the workflow dispatch API:
+
+```json
+{
+  "ref": "main",
+  "inputs": {
+    "source_sha": "0123456789abcdef0123456789abcdef01234567"
+  }
+}
+```
+
+The caller must replace the example with the source event's full commit SHA and authenticate as a
+GitHub App or fine-grained token that can dispatch Actions workflows in this repository. A
+repository-scoped `GITHUB_TOKEN` from `RazorConsole/RazorConsole` cannot trigger a workflow in this
+repository. Scheduled and push runs continue to build source `main`, and the manual fallback
+requires no cross-repository secret.
